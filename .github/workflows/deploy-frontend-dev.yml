@@ -1,0 +1,99 @@
+
+name: Zewelo Website - DEV
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zewelo-website-dev
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy Website
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build production website
+        run: npm run build
+
+      - name: Verify build
+        run: |
+          test -s dist/index.html
+          echo "Frontend build completed successfully."
+          du -sh dist/
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.UTHO_SSH_PRIVATE_KEY }}
+          UTHO_HOST: ${{ secrets.UTHO_HOST }}
+        run: |
+          set -eu
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$UTHO_HOST"
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" \
+            > ~/.ssh/utho_deploy_key
+          chmod 600 ~/.ssh/utho_deploy_key
+
+          ssh-keyscan -H "$UTHO_HOST" \
+            >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Prepare website directory
+        env:
+          UTHO_HOST: ${{ secrets.UTHO_HOST }}
+        run: |
+          ssh -i ~/.ssh/utho_deploy_key \
+            root@"$UTHO_HOST" \
+            'mkdir -p /var/www/zewelo-website'
+
+      - name: Upload website
+        env:
+          UTHO_HOST: ${{ secrets.UTHO_HOST }}
+        run: |
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/utho_deploy_key" \
+            dist/ \
+            root@"$UTHO_HOST":/var/www/zewelo-website/
+
+      - name: Verify deployed website
+        env:
+          UTHO_HOST: ${{ secrets.UTHO_HOST }}
+        run: |
+          ssh -i ~/.ssh/utho_deploy_key \
+            root@"$UTHO_HOST" 'bash -s' <<'EOF'
+          set -eu
+
+          test -s /var/www/zewelo-website/index.html
+
+          curl -fsS --max-time 15 \
+            -H 'Host: zewelo.in' \
+            http://127.0.0.1/ \
+            -o /tmp/zewelo-website-check.html
+
+          grep -qi '<html' /tmp/zewelo-website-check.html
+
+          echo "Zewelo website deployment successful."
+          EOF
